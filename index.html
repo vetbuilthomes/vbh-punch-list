@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Punch List</title>
+<!--
+  VBH punch list page. Source: Claude Projects/punch-list/web/index.html,
+  published to GitHub Pages (repo vetbuilthomes/vbh-punch-list) by
+  punch-list/publish-page.sh. All data comes from the Apps Script JSON API
+  below; nothing about any job is in this file.
+-->
+<style>
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+         font-size: 18px; color: #1a1a1a; background: #f4f4f2; }
+  header { background: #1f3a5f; color: #fff; padding: 16px; position: sticky; top: 0; z-index: 2; }
+  h1 { font-size: 22px; margin: 0 0 4px; line-height: 1.25; word-wrap: break-word; }
+  .progress { font-size: 18px; opacity: .95; }
+  .bar { height: 8px; background: rgba(255,255,255,.25); border-radius: 4px; margin-top: 8px; overflow: hidden; }
+  .bar > div { height: 100%; background: #6fcf73; width: 0; transition: width .3s; }
+  ul { list-style: none; margin: 0; padding: 8px 12px 96px; }
+  li { background: #fff; border-radius: 10px; margin: 8px 0; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  label { display: flex; align-items: center; gap: 14px; padding: 12px 14px; min-height: 64px; cursor: pointer; }
+  .box { flex: 0 0 48px; width: 48px; height: 48px; border: 3px solid #1f3a5f; border-radius: 8px;
+         display: flex; align-items: center; justify-content: center; background: #fff; }
+  .box svg { width: 32px; height: 32px; display: none; }
+  input[type=checkbox] { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  input:checked + .box { background: #2e7d32; border-color: #2e7d32; }
+  input:checked + .box svg { display: block; }
+  input:focus-visible + .box { outline: 3px solid #f0a500; outline-offset: 2px; }
+  .text { flex: 1; min-width: 0; }
+  .item { font-size: 19px; line-height: 1.3; word-wrap: break-word; }
+  .loc { font-size: 16px; color: #6b6b6b; margin-top: 3px; }
+  .by { font-size: 14px; color: #2e7d32; margin-top: 3px; }
+  li.done .item { text-decoration: line-through; color: #888; }
+  li.done { background: #f9fbf9; }
+  li.pending { opacity: .6; }
+  li.section { background: none; box-shadow: none; font-size: 15px; color: #555; margin: 18px 4px 4px;
+               text-transform: uppercase; letter-spacing: .04em; }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #2e7d32; color: #fff;
+           padding: 12px 22px; border-radius: 24px; font-size: 18px; opacity: 0; transition: opacity .25s; pointer-events: none; z-index: 5; }
+  .toast.err { background: #b3261e; }
+  .toast.show { opacity: 1; }
+  .msg { padding: 48px 20px; text-align: center; font-size: 20px; }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; z-index: 10; padding: 16px; }
+  .modal.show { display: flex; }
+  .card { background: #fff; border-radius: 12px; padding: 22px 18px; width: 100%; max-width: 420px; }
+  .card h2 { margin: 0 0 14px; font-size: 22px; }
+  .card input { width: 100%; font-size: 20px; padding: 12px; border: 2px solid #999; border-radius: 8px; }
+  .card button { margin-top: 14px; width: 100%; font-size: 20px; padding: 14px; border: 0; border-radius: 8px; background: #1f3a5f; color: #fff; }
+  .who { font-size: 15px; color: #555; text-align: center; padding: 4px 0 12px; }
+  .who a { color: #1f3a5f; }
+</style>
+</head>
+<body>
+<div id="app"><div class="msg">Loading… / Cargando…</div></div>
+<div class="toast" id="toast"></div>
+<div class="modal" id="nameModal">
+  <form class="card" id="nameForm">
+    <h2>Your name / Tu nombre</h2>
+    <input id="nameInput" autocomplete="name" maxlength="60" required>
+    <button type="submit">OK</button>
+  </form>
+</div>
+<script>
+  // Apps Script deployment (vetbuilthomes@gmail.com, "VBH Punch List"). Redeployed
+  // in place with clasp deploy -i, so this URL never changes.
+  var API = 'https://script.google.com/macros/s/AKfycbwh6gVmTaVMuJr8UeyB1oqbRcIyYsr1eTNZFXousbBRlcHvZzzsUBVZvnguHthBi2XQ/exec';
+  var ID = (new URLSearchParams(location.search).get('id') || '').trim();
+  var STATE = null;
+  var NAME_KEY = 'vbhPunchName';
+  var pendingTap = null;
+
+  function getName() { try { return localStorage.getItem(NAME_KEY) || window._name || ''; } catch (e) { return window._name || ''; } }
+  function setName(v) { window._name = v; try { localStorage.setItem(NAME_KEY, v); } catch (e) {} }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+  // credentials:'omit' sends no Google cookies, so a phone signed into several
+  // Google accounts is served like an anonymous one. POST is text/plain: no
+  // CORS preflight.
+  function api(body) {
+    var opts = body ? { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                        body: JSON.stringify(body), credentials: 'omit', redirect: 'follow' }
+                    : { credentials: 'omit', redirect: 'follow' };
+    var url = body ? API : API + '?id=' + encodeURIComponent(ID) + '&t=' + Date.now();
+    return fetch(url, opts).then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function(s) {
+      if (s && s.error) throw new Error(s.error);
+      return s;
+    });
+  }
+
+  var CHECK = '<svg viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  function render() {
+    var app = document.getElementById('app');
+    if (!STATE) return;
+    if (STATE.notFound) {
+      app.innerHTML = '<div class="msg">List not found<br><span style="color:#666">Lista no encontrada</span></div>';
+      document.title = 'List not found'; return;
+    }
+    if (STATE.loadError) {
+      app.innerHTML = '<div class="msg">Could not load the list. Check your signal and reload.<br><span style="color:#666">No se pudo cargar la lista. Revisa tu señal y recarga.</span></div>';
+      return;
+    }
+    document.title = STATE.job + ' - Punch List';
+    var items = STATE.items || [];
+    var open = items.filter(function(i) { return !i.checked; });
+    var done = items.filter(function(i) { return i.checked; });
+    var pct = items.length ? Math.round(100 * done.length / items.length) : 0;
+    var h = '<header><h1>' + esc(STATE.job) + '</h1>' +
+      '<div class="progress" id="progress">' + done.length + ' of ' + items.length + ' done / ' +
+      done.length + ' de ' + items.length + ' hechos</div>' +
+      '<div class="bar"><div style="width:' + pct + '%"></div></div></header><ul>';
+    if (!items.length) h += '<li class="msg">No items / Sin tareas</li>';
+    open.forEach(function(i) { h += row(i); });
+    if (done.length) h += '<li class="section">Done / Hecho</li>';
+    done.forEach(function(i) { h += row(i); });
+    var nm = getName();
+    h += '</ul><div class="who">' + (nm ? 'Checking as / Marcando como: <b>' + esc(nm) +
+      '</b> · <a href="#" id="chg">change / cambiar</a>' : '') + '</div>';
+    app.innerHTML = h;
+    var chg = document.getElementById('chg');
+    if (chg) chg.onclick = function(ev) { ev.preventDefault(); askName(null); };
+  }
+
+  function row(i) {
+    return '<li class="' + (i.checked ? 'done' : '') + '" data-n="' + i.n + '"><label>' +
+      '<input type="checkbox" data-n="' + i.n + '"' + (i.checked ? ' checked' : '') + '>' +
+      '<span class="box">' + CHECK + '</span><span class="text"><div class="item">' + esc(i.text) + '</div>' +
+      (i.location ? '<div class="loc">' + esc(i.location) + '</div>' : '') +
+      (i.checked && i.by ? '<div class="by">✓ ' + esc(i.by) + '</div>' : '') +
+      '</span></label></li>';
+  }
+
+  function toast(msg, err) {
+    var t = document.getElementById('toast');
+    t.textContent = msg; t.className = 'toast show' + (err ? ' err' : '');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(function() { t.className = 'toast' + (err ? ' err' : ''); }, err ? 3500 : 1400);
+  }
+
+  function askName(then) {
+    pendingTap = then;
+    document.getElementById('nameInput').value = getName();
+    document.getElementById('nameModal').className = 'modal show';
+    setTimeout(function() { document.getElementById('nameInput').focus(); }, 50);
+  }
+  document.getElementById('nameForm').onsubmit = function(ev) {
+    ev.preventDefault();
+    var v = document.getElementById('nameInput').value.trim();
+    if (!v) return;
+    setName(v);
+    document.getElementById('nameModal').className = 'modal';
+    var p = pendingTap; pendingTap = null;
+    if (p) p(); else render();
+  };
+
+  var saving = 0;
+  function tap(n, checked) {
+    var item = (STATE.items || []).filter(function(i) { return i.n === n; })[0];
+    if (!item) return;
+    var before = item.checked, beforeBy = item.by;
+    item.checked = checked; item.by = checked ? getName() : '';
+    render();
+    var li = document.querySelector('li[data-n="' + n + '"]'); if (li) li.classList.add('pending');
+    saving++;
+    api({ id: ID, n: n, checked: checked, name: getName() }).then(function(s) {
+      saving--;
+      if (s && (s.items || s.notFound)) STATE = s;
+      render(); toast('Saved / Guardado');
+    }).catch(function() {
+      saving--;
+      item.checked = before; item.by = beforeBy; render();
+      toast('Not saved, try again / No guardado, intenta otra vez', true);
+    });
+  }
+
+  document.getElementById('app').addEventListener('change', function(ev) {
+    var el = ev.target;
+    if (!el || el.type !== 'checkbox') return;
+    var n = Number(el.getAttribute('data-n')), checked = el.checked;
+    if (!getName()) { el.checked = !checked; askName(function() { tap(n, checked); }); return; }
+    tap(n, checked);
+  });
+
+  function load(first) {
+    if (!ID) { STATE = { notFound: true }; render(); return; }
+    api(null).then(function(s) {
+      if (saving) return;               // a tap's reply will bring fresher state
+      STATE = s; render();
+      if (first && STATE.items && !getName()) askName(null);
+    }).catch(function() {
+      if (first) { STATE = { loadError: true }; render(); }
+    });
+  }
+
+  // Pick up other people's taps when the page comes back to the front.
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'visible' && STATE && STATE.items) load(false);
+  });
+
+  load(true);
+</script>
+</body>
+</html>
