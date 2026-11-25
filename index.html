@@ -4,12 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
 <title>Punch List</title>
 <!--
   VBH punch list page. Source: Claude Projects/punch-list/web/index.html,
   published to GitHub Pages (repo vetbuilthomes/vbh-punch-list) by
   punch-list/publish-page.sh. All data comes from the Apps Script JSON API
   below; nothing about any job is in this file.
+  Modes:  ?id=<fileId>            crew checklist (or a reminder)
+          ?me=<PM token>          My list (one PM's reminders and open punch lists)
+          ?close=<fileId>&k=<t>   confirm closing a punch list (link from the PM's email)
 -->
 <style>
   * { box-sizing: border-box; }
@@ -21,7 +25,8 @@
   .progress { font-size: 18px; opacity: .95; }
   .bar { height: 8px; background: rgba(255,255,255,.25); border-radius: 4px; margin-top: 8px; overflow: hidden; }
   .bar > div { height: 100%; background: #6fcf73; width: 0; transition: width .3s; }
-  ul { list-style: none; margin: 0; padding: 8px 12px 96px; }
+  ul { list-style: none; margin: 0; padding: 8px 12px 24px; }
+  ul.last { padding-bottom: 96px; }
   li { background: #fff; border-radius: 10px; margin: 8px 0; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
   label { display: flex; align-items: center; gap: 14px; padding: 12px 14px; min-height: 64px; cursor: pointer; }
   .box { flex: 0 0 48px; width: 48px; height: 48px; border: 3px solid #1f3a5f; border-radius: 8px;
@@ -33,13 +38,33 @@
   input:focus-visible + .box { outline: 3px solid #f0a500; outline-offset: 2px; }
   .text { flex: 1; min-width: 0; }
   .item { font-size: 19px; line-height: 1.3; word-wrap: break-word; }
+  .es { font-size: 16px; color: #3d5a80; font-style: italic; margin-top: 2px; }
   .loc { font-size: 16px; color: #6b6b6b; margin-top: 3px; }
   .by { font-size: 14px; color: #2e7d32; margin-top: 3px; }
-  li.done .item { text-decoration: line-through; color: #888; }
+  .due { font-size: 15px; color: #555; margin-top: 3px; }
+  .due.over { color: #b3261e; font-weight: bold; }
+  .due.today { color: #b26a00; font-weight: bold; }
+  li.done .item, li.done .es { text-decoration: line-through; color: #888; }
   li.done { background: #f9fbf9; }
+  li.flag { border-left: 6px solid #b3261e; }
+  .flagnote { font-size: 16px; color: #b3261e; margin-top: 4px; }
   li.pending { opacity: .6; }
   li.section { background: none; box-shadow: none; font-size: 15px; color: #555; margin: 18px 4px 4px;
                text-transform: uppercase; letter-spacing: .04em; }
+  .row2 { display: flex; justify-content: flex-end; padding: 0 14px 12px; }
+  .probbtn { font-size: 16px; padding: 10px 14px; min-height: 44px; border: 2px solid #b3261e; color: #b3261e;
+             background: #fff; border-radius: 8px; }
+  h2.sec { font-size: 17px; color: #1f3a5f; margin: 18px 16px 0; text-transform: uppercase; letter-spacing: .04em; }
+  .card2 { background: #fff; border-radius: 10px; margin: 8px 0; padding: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .card2 .job { font-size: 19px; font-weight: bold; }
+  .card2 .meta { font-size: 16px; color: #555; margin-top: 3px; }
+  .stale { color: #b26a00; font-weight: bold; }
+  .btns { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  .btn { display: inline-block; font-size: 17px; padding: 12px 16px; min-height: 48px; border-radius: 8px;
+         text-decoration: none; border: 0; }
+  .btn.pri { background: #1f3a5f; color: #fff; }
+  .btn.red { background: #fff; color: #b3261e; border: 2px solid #b3261e; }
+  .empty { color: #777; padding: 8px 4px; }
   .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #2e7d32; color: #fff;
            padding: 12px 22px; border-radius: 24px; font-size: 18px; opacity: 0; transition: opacity .25s; pointer-events: none; z-index: 5; }
   .toast.err { background: #b3261e; }
@@ -49,8 +74,9 @@
   .modal.show { display: flex; }
   .card { background: #fff; border-radius: 12px; padding: 22px 18px; width: 100%; max-width: 420px; }
   .card h2 { margin: 0 0 14px; font-size: 22px; }
-  .card input { width: 100%; font-size: 20px; padding: 12px; border: 2px solid #999; border-radius: 8px; }
+  .card input, .card textarea { width: 100%; font-size: 20px; padding: 12px; border: 2px solid #999; border-radius: 8px; font-family: inherit; }
   .card button { margin-top: 14px; width: 100%; font-size: 20px; padding: 14px; border: 0; border-radius: 8px; background: #1f3a5f; color: #fff; }
+  .card button.cancel { background: #e4e4e0; color: #1a1a1a; }
   .who { font-size: 15px; color: #555; text-align: center; padding: 4px 0 12px; }
   .who a { color: #1f3a5f; }
 </style>
@@ -65,145 +91,270 @@
     <button type="submit">OK</button>
   </form>
 </div>
+<div class="modal" id="probModal">
+  <form class="card" id="probForm">
+    <h2>Problem / Problema</h2>
+    <div id="probItem" style="font-size:17px;color:#555;margin-bottom:10px"></div>
+    <textarea id="probInput" rows="3" maxlength="300" required placeholder="What's wrong? / ¿Cuál es el problema?"></textarea>
+    <button type="submit">Save / Guardar</button>
+    <button type="button" class="cancel" id="probCancel">Cancel / Cancelar</button>
+  </form>
+</div>
 <script>
   // Apps Script deployment (vetbuilthomes@gmail.com, "VBH Punch List"). Redeployed
   // in place with clasp deploy -i, so this URL never changes.
   var API = 'https://script.google.com/macros/s/AKfycbwh6gVmTaVMuJr8UeyB1oqbRcIyYsr1eTNZFXousbBRlcHvZzzsUBVZvnguHthBi2XQ/exec';
-  var ID = (new URLSearchParams(location.search).get('id') || '').trim();
+  var Q = new URLSearchParams(location.search);
+  var ID = (Q.get('id') || '').trim(), ME = (Q.get('me') || '').trim();
+  var CLOSE = (Q.get('close') || '').trim(), KEY = (Q.get('k') || '').trim();
+  var MODE = ME ? 'me' : CLOSE ? 'close' : 'crew';
   var STATE = null;
   var NAME_KEY = 'vbhPunchName';
-  var pendingTap = null;
+  var pendingTap = null, probN = null, saving = 0;
 
   function getName() { try { return localStorage.getItem(NAME_KEY) || window._name || ''; } catch (e) { return window._name || ''; } }
   function setName(v) { window._name = v; try { localStorage.setItem(NAME_KEY, v); } catch (e) {} }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function $(id) { return document.getElementById(id); }
 
   // credentials:'omit' sends no Google cookies, so a phone signed into several
   // Google accounts is served like an anonymous one. POST is text/plain: no
   // CORS preflight.
-  function api(body) {
-    var opts = body ? { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                        body: JSON.stringify(body), credentials: 'omit', redirect: 'follow' }
-                    : { credentials: 'omit', redirect: 'follow' };
-    var url = body ? API : API + '?api=1&id=' + encodeURIComponent(ID) + '&t=' + Date.now();
-    return fetch(url, opts).then(function(r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.json();
-    }).then(function(s) {
-      if (s && s.error) throw new Error(s.error);
-      return s;
-    });
+  function apiGet(params) {
+    var qs = Object.keys(params).map(function(k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
+    return fetch(API + '?api=1&' + qs + '&t=' + Date.now(), { credentials: 'omit', redirect: 'follow' }).then(done);
+  }
+  function apiPost(body) {
+    return fetch(API, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(body), credentials: 'omit', redirect: 'follow' }).then(done);
+  }
+  function done(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json().then(function(s) { if (s && s.error) throw new Error(s.error); return s; });
   }
 
   var CHECK = '<svg viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-
-  function render() {
-    var app = document.getElementById('app');
-    if (!STATE) return;
-    if (STATE.notFound) {
-      app.innerHTML = '<div class="msg">List not found<br><span style="color:#666">Lista no encontrada</span></div>';
-      document.title = 'List not found'; return;
-    }
-    if (STATE.loadError) {
-      app.innerHTML = '<div class="msg">Could not load the list. Check your signal and reload.<br><span style="color:#666">No se pudo cargar la lista. Revisa tu señal y recarga.</span></div>';
-      return;
-    }
-    document.title = STATE.job + ' - Punch List';
-    var items = STATE.items || [];
-    var open = items.filter(function(i) { return !i.checked; });
-    var done = items.filter(function(i) { return i.checked; });
-    var pct = items.length ? Math.round(100 * done.length / items.length) : 0;
-    var h = '<header><h1>' + esc(STATE.job) + '</h1>' +
-      '<div class="progress" id="progress">' + done.length + ' of ' + items.length + ' done / ' +
-      done.length + ' de ' + items.length + ' hechos</div>' +
-      '<div class="bar"><div style="width:' + pct + '%"></div></div></header><ul>';
-    if (!items.length) h += '<li class="msg">No items / Sin tareas</li>';
-    open.forEach(function(i) { h += row(i); });
-    if (done.length) h += '<li class="section">Done / Hecho</li>';
-    done.forEach(function(i) { h += row(i); });
-    var nm = getName();
-    h += '</ul><div class="who">' + (nm ? 'Checking as / Marcando como: <b>' + esc(nm) +
-      '</b> · <a href="#" id="chg">change / cambiar</a>' : '') + '</div>';
-    app.innerHTML = h;
-    var chg = document.getElementById('chg');
-    if (chg) chg.onclick = function(ev) { ev.preventDefault(); askName(null); };
-  }
-
-  function row(i) {
-    return '<li class="' + (i.checked ? 'done' : '') + '" data-n="' + i.n + '"><label>' +
-      '<input type="checkbox" data-n="' + i.n + '"' + (i.checked ? ' checked' : '') + '>' +
-      '<span class="box">' + CHECK + '</span><span class="text"><div class="item">' + esc(i.text) + '</div>' +
-      (i.location ? '<div class="loc">' + esc(i.location) + '</div>' : '') +
-      (i.checked && i.by ? '<div class="by">✓ ' + esc(i.by) + '</div>' : '') +
-      '</span></label></li>';
-  }
+  function fmtDue(d) { var p = d.split('-'); return Number(p[1]) + '/' + Number(p[2]); }
 
   function toast(msg, err) {
-    var t = document.getElementById('toast');
+    var t = $('toast');
     t.textContent = msg; t.className = 'toast show' + (err ? ' err' : '');
     clearTimeout(toast._t);
     toast._t = setTimeout(function() { t.className = 'toast' + (err ? ' err' : ''); }, err ? 3500 : 1400);
   }
 
-  function askName(then) {
-    pendingTap = then;
-    document.getElementById('nameInput').value = getName();
-    document.getElementById('nameModal').className = 'modal show';
-    setTimeout(function() { document.getElementById('nameInput').focus(); }, 50);
+  function msgPage(en, es) {
+    $('app').innerHTML = '<div class="msg">' + en + '<br><span style="color:#666">' + es + '</span></div>';
   }
-  document.getElementById('nameForm').onsubmit = function(ev) {
-    ev.preventDefault();
-    var v = document.getElementById('nameInput').value.trim();
-    if (!v) return;
-    setName(v);
-    document.getElementById('nameModal').className = 'modal';
-    var p = pendingTap; pendingTap = null;
-    if (p) p(); else render();
-  };
 
-  var saving = 0;
+  // ---------------- crew page ----------------
+  function renderCrew() {
+    if (STATE.notFound) { msgPage('List not found', 'Lista no encontrada'); document.title = 'List not found'; return; }
+    if (STATE.closed) { msgPage('This list was closed', 'Esta lista fue cerrada');
+                        document.title = (STATE.job || 'Punch list') + ' - closed'; return; }
+    document.title = STATE.job + ' - Punch List';
+    var items = STATE.items || [];
+    var open = items.filter(function(i) { return !i.checked; });
+    var fin = items.filter(function(i) { return i.checked; });
+    var pct = items.length ? Math.round(100 * fin.length / items.length) : 0;
+    var h = '<header><h1>' + esc(STATE.job) + '</h1>' +
+      '<div class="progress" id="progress">' + fin.length + ' of ' + items.length + ' done / ' +
+      fin.length + ' de ' + items.length + ' hechos</div>' +
+      '<div class="bar"><div style="width:' + pct + '%"></div></div></header><ul class="last">';
+    if (!items.length) h += '<li class="msg">No items / Sin tareas</li>';
+    open.forEach(function(i) { h += crewRow(i); });
+    if (fin.length) h += '<li class="section">Done / Hecho</li>';
+    fin.forEach(function(i) { h += crewRow(i); });
+    var nm = getName();
+    h += '</ul><div class="who">' + (nm ? 'Checking as / Marcando como: <b>' + esc(nm) +
+      '</b> · <a href="#" id="chg">change / cambiar</a>' : '') + '</div>';
+    $('app').innerHTML = h;
+    var chg = $('chg');
+    if (chg) chg.onclick = function(ev) { ev.preventDefault(); askName(null); };
+  }
+
+  function crewRow(i) {
+    var punch = STATE.type !== 'reminder';
+    return '<li class="' + (i.checked ? 'done' : '') + (i.problem ? ' flag' : '') + '" data-n="' + i.n + '"><label>' +
+      '<input type="checkbox" data-n="' + i.n + '"' + (i.checked ? ' checked' : '') + '>' +
+      '<span class="box">' + CHECK + '</span><span class="text"><div class="item">' + esc(i.text) + '</div>' +
+      (i.es && i.es.toLowerCase() !== i.text.toLowerCase() ? '<div class="es">' + esc(i.es) + '</div>' : '') +
+      (i.location ? '<div class="loc">' + esc(i.location) + '</div>' : '') +
+      (i.problem ? '<div class="flagnote">&#9873; ' + esc(i.problem.note) + (i.problem.by ? ' (' + esc(i.problem.by) + ')' : '') + '</div>' : '') +
+      (i.checked && i.by ? '<div class="by">✓ ' + esc(i.by) + '</div>' : '') +
+      '</span></label>' +
+      (punch && !i.checked ? '<div class="row2"><button type="button" class="probbtn" data-prob="' + i.n + '">&#9873; Problem / Problema</button></div>' : '') +
+      '</li>';
+  }
+
   function tap(n, checked) {
     var item = (STATE.items || []).filter(function(i) { return i.n === n; })[0];
     if (!item) return;
     var before = item.checked, beforeBy = item.by;
     item.checked = checked; item.by = checked ? getName() : '';
-    render();
+    if (checked) item.problem = null;
+    renderCrew();
     var li = document.querySelector('li[data-n="' + n + '"]'); if (li) li.classList.add('pending');
     saving++;
-    api({ id: ID, n: n, checked: checked, name: getName() }).then(function(s) {
-      saving--;
-      if (s && (s.items || s.notFound)) STATE = s;
-      render(); toast('Saved / Guardado');
+    apiPost({ id: ID, n: n, checked: checked, name: getName() }).then(function(s) {
+      saving--; if (s) STATE = s; renderCrew(); toast('Saved / Guardado');
     }).catch(function() {
-      saving--;
-      item.checked = before; item.by = beforeBy; render();
+      saving--; item.checked = before; item.by = beforeBy; renderCrew();
       toast('Not saved, try again / No guardado, intenta otra vez', true);
     });
   }
 
-  document.getElementById('app').addEventListener('change', function(ev) {
+  function openProblem(n) {
+    var item = (STATE.items || []).filter(function(i) { return i.n === n; })[0];
+    if (!item) return;
+    probN = n;
+    $('probItem').textContent = item.text;
+    $('probInput').value = '';
+    $('probModal').className = 'modal show';
+    setTimeout(function() { $('probInput').focus(); }, 50);
+  }
+  $('probCancel').onclick = function() { $('probModal').className = 'modal'; probN = null; };
+  $('probForm').onsubmit = function(ev) {
+    ev.preventDefault();
+    var note = $('probInput').value.trim(), n = probN;
+    if (!note || !n) return;
+    $('probModal').className = 'modal'; probN = null;
+    saving++;
+    apiPost({ action: 'problem', id: ID, n: n, note: note, name: getName() }).then(function(s) {
+      saving--; if (s) STATE = s; renderCrew(); toast('Problem saved / Problema guardado');
+    }).catch(function() {
+      saving--; toast('Not saved, try again / No guardado, intenta otra vez', true);
+    });
+  };
+
+  // ---------------- My list ----------------
+  function renderMe() {
+    if (STATE.notFound) { msgPage('List not found', 'Lista no encontrada'); return; }
+    document.title = 'My list';
+    var rs = STATE.reminders || [], ls = STATE.lists || [];
+    var h = '<header><h1>My list</h1><div class="progress">' + rs.length + ' reminder' + (rs.length === 1 ? '' : 's') +
+      ' · ' + ls.length + ' open punch list' + (ls.length === 1 ? '' : 's') + '</div></header>';
+    h += '<h2 class="sec">Reminders</h2><ul>';
+    if (!rs.length) h += '<li class="section empty" style="text-transform:none">Nothing open.</li>';
+    rs.forEach(function(r) {
+      var due = r.due ? '<div class="due' + (r.overdue ? ' over' : r.dueToday ? ' today' : '') + '">' +
+        (r.overdue ? 'Overdue, was due ' : r.dueToday ? 'Due today, ' : 'Due ') + fmtDue(r.due) + '</div>' : '';
+      h += '<li data-rid="' + esc(r.id) + '"><label><input type="checkbox" data-rid="' + esc(r.id) + '">' +
+        '<span class="box">' + CHECK + '</span><span class="text"><div class="item">' + esc(r.text) + '</div>' +
+        (r.job ? '<div class="loc">' + esc(r.job) + '</div>' : '') + due + '</span></label></li>';
+    });
+    h += '</ul><h2 class="sec">Open punch lists</h2><ul class="last">';
+    if (!ls.length) h += '<li class="section empty" style="text-transform:none">None open.</li>';
+    ls.forEach(function(l) {
+      h += '<li class="card2"><div class="job">' + esc(l.job) + '</div>' +
+        '<div class="meta">' + l.done + ' of ' + l.total + ' done · sent ' +
+        (l.daysSent <= 0 ? 'today' : l.daysSent === 1 ? '1 day ago' : l.daysSent + ' days ago') +
+        (l.stale ? ' · <span class="stale">stale</span>' : '') + '</div>' +
+        (l.problems || []).map(function(p) {
+          return '<div class="flagnote">&#9873; ' + esc(p.text) + ': ' + esc(p.note) + (p.by ? ' (' + esc(p.by) + ')' : '') + '</div>';
+        }).join('') +
+        '<div class="btns"><a class="btn pri" href="' + esc(l.crewUrl) + '">Crew page</a>' +
+        '<button type="button" class="btn red" data-close="' + esc(l.id) + '" data-job="' + esc(l.job) + '">Close</button></div></li>';
+    });
+    h += '</ul>';
+    $('app').innerHTML = h;
+  }
+
+  function checkReminder(rid) {
+    var li = document.querySelector('li[data-rid="' + rid + '"]'); if (li) li.classList.add('pending');
+    saving++;
+    apiPost({ id: rid, n: 1, checked: true, name: getName() }).then(function() {
+      saving--;
+      STATE.reminders = (STATE.reminders || []).filter(function(r) { return r.id !== rid; });
+      renderMe(); toast('Done');
+    }).catch(function() {
+      saving--; renderMe(); toast('Not saved, try again', true);
+    });
+  }
+
+  function closeFromMe(id, job) {
+    if (!confirm('Close the punch list for ' + job + '? The crew page will say it was closed.')) return;
+    saving++;
+    apiPost({ action: 'close', id: id, me: ME }).then(function() {
+      saving--;
+      STATE.lists = (STATE.lists || []).filter(function(l) { return l.id !== id; });
+      renderMe(); toast('List closed');
+    }).catch(function() { saving--; toast('Not closed, try again', true); });
+  }
+
+  // ---------------- close confirm (email link) ----------------
+  function renderClose() {
+    if (STATE.notFound) { msgPage('List not found', 'Lista no encontrada'); return; }
+    document.title = 'Close ' + STATE.job;
+    if (STATE.closed) { msgPage('This list is closed.', esc(STATE.job)); return; }
+    if (!STATE.canClose) { msgPage('This close link is not valid.', 'Open your latest email or My list.'); return; }
+    $('app').innerHTML = '<header><h1>' + esc(STATE.job) + '</h1><div class="progress">Close this punch list?</div></header>' +
+      '<div class="msg" style="font-size:18px">The crew page will show "This list was closed" and it will drop out of your email and My list.' +
+      '<div class="btns" style="justify-content:center;margin-top:20px"><button type="button" class="btn red" id="doClose">Close the list</button></div></div>';
+    $('doClose').onclick = function() {
+      this.disabled = true;
+      apiPost({ action: 'close', id: CLOSE, k: KEY }).then(function() {
+        STATE.closed = true; renderClose();
+      }).catch(function() { $('doClose').disabled = false; toast('Not closed, try again', true); });
+    };
+  }
+
+  // ---------------- name prompt ----------------
+  function askName(then) {
+    pendingTap = then;
+    $('nameInput').value = getName();
+    $('nameModal').className = 'modal show';
+    setTimeout(function() { $('nameInput').focus(); }, 50);
+  }
+  $('nameForm').onsubmit = function(ev) {
+    ev.preventDefault();
+    var v = $('nameInput').value.trim();
+    if (!v) return;
+    setName(v);
+    $('nameModal').className = 'modal';
+    var p = pendingTap; pendingTap = null;
+    if (p) p(); else render();
+  };
+
+  // ---------------- events ----------------
+  $('app').addEventListener('change', function(ev) {
     var el = ev.target;
     if (!el || el.type !== 'checkbox') return;
+    if (MODE === 'me') { el.checked = true; checkReminder(el.getAttribute('data-rid')); return; }
     var n = Number(el.getAttribute('data-n')), checked = el.checked;
     if (!getName()) { el.checked = !checked; askName(function() { tap(n, checked); }); return; }
     tap(n, checked);
   });
+  $('app').addEventListener('click', function(ev) {
+    var b = ev.target.closest && ev.target.closest('button');
+    if (!b) return;
+    if (b.hasAttribute('data-prob')) {
+      var n = Number(b.getAttribute('data-prob'));
+      if (!getName()) { askName(function() { openProblem(n); }); return; }
+      openProblem(n);
+    } else if (b.hasAttribute('data-close')) {
+      closeFromMe(b.getAttribute('data-close'), b.getAttribute('data-job'));
+    }
+  });
+
+  function render() { if (!STATE) return; MODE === 'me' ? renderMe() : MODE === 'close' ? renderClose() : renderCrew(); }
 
   function load(first) {
-    if (!ID) { STATE = { notFound: true }; render(); return; }
-    api(null).then(function(s) {
-      if (saving) return;               // a tap's reply will bring fresher state
+    var params = MODE === 'me' ? { me: ME } : MODE === 'close' ? { close: CLOSE, k: KEY } : { id: ID };
+    if (MODE === 'crew' && !ID) { STATE = { notFound: true }; render(); return; }
+    apiGet(params).then(function(s) {
+      if (saving) return;               // a save's reply will bring fresher state
       STATE = s; render();
-      if (first && STATE.items && !getName()) askName(null);
+      if (first && MODE === 'crew' && STATE.items && !getName()) askName(null);
     }).catch(function() {
-      if (first) { STATE = { loadError: true }; render(); }
+      if (first) msgPage('Could not load. Check your signal and reload.', 'No se pudo cargar. Revisa tu señal y recarga.');
     });
   }
 
-  // Pick up other people's taps when the page comes back to the front.
+  // Pick up other people's taps (and new reminders) when the page comes back to the front.
   document.addEventListener('visibilitychange', function() {
-    if (document.visibilityState === 'visible' && STATE && STATE.items) load(false);
+    if (document.visibilityState === 'visible' && STATE && MODE !== 'close') load(false);
   });
 
   load(true);
