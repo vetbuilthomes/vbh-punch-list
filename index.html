@@ -86,7 +86,7 @@
     var opts = body ? { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
                         body: JSON.stringify(body), credentials: 'omit', redirect: 'follow' }
                     : { credentials: 'omit', redirect: 'follow' };
-    var url = body ? API : API + '?id=' + encodeURIComponent(ID) + '&t=' + Date.now();
+    var url = body ? API : API + '?api=1&id=' + encodeURIComponent(ID) + '&t=' + Date.now();
     return fetch(url, opts).then(function(r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
