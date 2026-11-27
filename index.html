@@ -291,14 +291,19 @@
   }
 
   function checkReminder(rid) {
-    var li = document.querySelector('li[data-rid="' + rid + '"]'); if (li) li.classList.add('pending');
+    // The save takes several seconds, so the item leaves the list at once and
+    // comes back, with a red message, only if the save fails.
+    var before = STATE.reminders || [];
+    STATE.reminders = before.filter(function(r) { return r.id !== rid; });
+    renderMe(); toast('Saving…');
     saving++;
     apiPost({ id: rid, n: 1, checked: true, name: getName() }).then(function() {
-      saving--;
-      STATE.reminders = (STATE.reminders || []).filter(function(r) { return r.id !== rid; });
-      renderMe(); toast('Done');
+      saving--; toast('Done');
     }).catch(function() {
-      saving--; renderMe(); toast('Not saved, try again', true);
+      saving--;
+      var back = before.filter(function(r) { return r.id === rid; });
+      STATE.reminders = (STATE.reminders || []).concat(back);
+      renderMe(); toast('Not saved, try again', true);
     });
   }
 
