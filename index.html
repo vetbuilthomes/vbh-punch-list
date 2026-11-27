@@ -12,7 +12,8 @@
   punch-list/publish-page.sh. All data comes from the Apps Script JSON API
   below; nothing about any job is in this file.
   Modes:  ?id=<fileId>            crew checklist (or a reminder)
-          ?me=<PM token>          My list (one PM's reminders and open punch lists)
+          ?me=<PM token>          My list (one person's reminders in Now / This week /
+                                  When I have time / Waiting on, and open punch lists)
           ?close=<fileId>&k=<t>   confirm closing a punch list (link from the PM's email)
 -->
 <style>
@@ -44,6 +45,9 @@
   .due { font-size: 15px; color: #555; margin-top: 3px; }
   .due.over { color: #b3261e; font-weight: bold; }
   .due.today { color: #b26a00; font-weight: bold; }
+  .small { font-size: 14px; color: #666; margin-top: 3px; line-height: 1.35; word-wrap: break-word; }
+  .small b { color: #444; font-weight: 600; }
+  h2.sec .n { color: #777; font-weight: normal; }
   li.done .item, li.done .es { text-decoration: line-through; color: #888; }
   li.done { background: #f9fbf9; }
   li.flag { border-left: 6px solid #b3261e; }
@@ -233,18 +237,21 @@
     if (STATE.notFound) { msgPage('List not found', 'Lista no encontrada'); return; }
     document.title = 'My list';
     var rs = STATE.reminders || [], ls = STATE.lists || [];
-    var h = '<header><h1>My list</h1><div class="progress">' + rs.length + ' reminder' + (rs.length === 1 ? '' : 's') +
-      ' · ' + ls.length + ' open punch list' + (ls.length === 1 ? '' : 's') + '</div></header>';
-    h += '<h2 class="sec">Reminders</h2><ul>';
-    if (!rs.length) h += '<li class="section empty" style="text-transform:none">Nothing open.</li>';
-    rs.forEach(function(r) {
-      var due = r.due ? '<div class="due' + (r.overdue ? ' over' : r.dueToday ? ' today' : '') + '">' +
-        (r.overdue ? 'Overdue, was due ' : r.dueToday ? 'Due today, ' : 'Due ') + fmtDue(r.due) + '</div>' : '';
-      h += '<li data-rid="' + esc(r.id) + '"><label><input type="checkbox" data-rid="' + esc(r.id) + '">' +
-        '<span class="box">' + CHECK + '</span><span class="text"><div class="item">' + esc(r.text) + '</div>' +
-        (r.job ? '<div class="loc">' + esc(r.job) + '</div>' : '') + due + '</span></label></li>';
+    // Buckets come from the server (worked out for today, Eastern time). A reminder with
+    // no bucket (an older server) is shown under When I have time.
+    var by = { now: [], week: [], later: [], waiting: [] };
+    rs.forEach(function(r) { (by[r.bucket] || by.later).push(r); });
+    var h = '<header><h1>My list</h1><div class="progress">' + by.now.length + ' now · ' + by.week.length +
+      ' this week · ' + by.later.length + ' later · ' + by.waiting.length + ' waiting · ' +
+      ls.length + ' punch list' + (ls.length === 1 ? '' : 's') + '</div></header>';
+    [['now', 'Now'], ['week', 'This week'], ['later', 'When I have time'], ['waiting', 'Waiting on']].forEach(function(b) {
+      var list = by[b[0]];
+      h += '<h2 class="sec">' + b[1] + ' <span class="n">(' + list.length + ')</span></h2><ul>';
+      if (!list.length) h += '<li class="section empty" style="text-transform:none">Nothing here.</li>';
+      list.forEach(function(r) { h += reminderRow(r); });
+      h += '</ul>';
     });
-    h += '</ul><h2 class="sec">Open punch lists</h2><ul class="last">';
+    h += '<h2 class="sec">Open punch lists</h2><ul class="last">';
     if (!ls.length) h += '<li class="section empty" style="text-transform:none">None open.</li>';
     ls.forEach(function(l) {
       h += '<li class="card2"><div class="job">' + esc(l.job) + '</div>' +
@@ -259,6 +266,28 @@
     });
     h += '</ul>';
     $('app').innerHTML = h;
+  }
+
+  function reminderRow(r) {
+    var due = '';
+    if (r.bucket === 'waiting') {
+      var isDate = /^\d{4}-\d{2}-\d{2}$/.test(r.checkBack || '');
+      var w = [];
+      if (r.waitingOn) w.push('Waiting on ' + esc(r.waitingOn));
+      if (r.checkBack) w.push((r.checkDue ? 'Check back now, was ' : 'Check back ') + esc(isDate ? fmtDue(r.checkBack) : r.checkBack));
+      if (w.length) due = '<div class="due' + (r.checkDue ? ' over' : '') + '">' + w.join(' · ') + '</div>';
+    } else if (r.due) {
+      due = '<div class="due' + (r.overdue ? ' over' : r.dueToday ? ' today' : '') + '">' +
+        (r.overdue ? 'Overdue ' + r.daysOverdue + (r.daysOverdue === 1 ? ' day' : ' days') + ', was due ' :
+         r.dueToday ? 'Due today, ' : 'Due ') + fmtDue(r.due) + '</div>';
+    }
+    var small = '';
+    if (r.kind) small += '<div class="small">' + esc(r.kind) + '</div>';
+    if (r.next) small += '<div class="small"><b>Next:</b> ' + esc(r.next) + '</div>';
+    if (r.fix) small += '<div class="small"><b>Fix:</b> ' + esc(r.fix) + '</div>';
+    return '<li data-rid="' + esc(r.id) + '"><label><input type="checkbox" data-rid="' + esc(r.id) + '">' +
+      '<span class="box">' + CHECK + '</span><span class="text"><div class="item">' + esc(r.text) + '</div>' +
+      (r.job ? '<div class="loc">' + esc(r.job) + '</div>' : '') + due + small + '</span></label></li>';
   }
 
   function checkReminder(rid) {
